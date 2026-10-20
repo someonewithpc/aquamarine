@@ -1139,6 +1139,23 @@ bool Aquamarine::CDRMBackend::registerGPU(SP<CSessionDevice> gpu_, SP<CDRMBacken
         if (E.type == CSessionDevice::AQ_SESSION_EVENT_CHANGE_HOTPLUG) {
             backend->log(AQ_LOG_DEBUG, std::format("drm: Got a hotplug event for {}", gpuName));
             recheckOutputs();
+
+            // The kernel can change connector state on its own and announce it with a
+            // hotplug event. amdgpu does this for panel_power_savings (ABM), and only a
+            // commit that includes the connector applies it, so drop the props cache.
+            // amdgpu creates that attribute only on eDP (amdgpu_dm_should_create_sysfs()),
+            // not on LVDS, and some HDMI sinks blank whenever connector state is in a
+            // commit (#265), so leave the rest alone.
+            if (atomic && driver == AQ_BACKEND_GPU_DRIVER_AMD) {
+                for (const auto& conn : connectors) {
+                    if (conn->status != DRM_MODE_CONNECTED || !conn->output || conn->type != DRM_MODE_CONNECTOR_eDP)
+                        continue;
+                    if (E.hotplug.connectorID && E.hotplug.connectorID != conn->id)
+                        continue;
+                    conn->atomic.propsGeneration++;
+                    conn->output->scheduleFrame(IOutput::AQ_SCHEDULE_NEEDS_FRAME);
+                }
+            }
         } else if (E.type == CSessionDevice::AQ_SESSION_EVENT_CHANGE_LEASE) {
             backend->log(AQ_LOG_DEBUG, std::format("drm: Got a lease event for {}", gpuName));
             scanLeases();
@@ -1776,6 +1793,7 @@ bool Aquamarine::SDRMConnector::init(drmModeConnector* connector) {
         name = "ERROR";
 
     szName = std::format("{}-{}", name, connector->connector_type_id);
+    type   = connector->connector_type;
     backend->backend->log(AQ_LOG_DEBUG, std::format("drm: Connector gets name {}", szName));
 
     possibleCrtcs = drmModeConnectorGetPossibleCrtcs(backend->gpu->fd, connector);
@@ -3088,6 +3106,10 @@ Aquamarine::IOutput::SCommitSubmission Aquamarine::CDRMOutput::commitAsync(const
         COutputState::AQ_OUTPUT_STATE_BUFFER | COutputState::AQ_OUTPUT_STATE_DAMAGE | COutputState::AQ_OUTPUT_STATE_EXPLICIT_IN_FENCE | COutputState::AQ_OUTPUT_STATE_CURSOR_POS;
 
     if (!(COMMITTED & COutputState::AQ_OUTPUT_STATE_BUFFER) || (COMMITTED & ~ASYNC_PROPERTIES) || SNAPSHOT.needsReconfig() || lastCommitNoBuffer)
+        return {.error = ENOTSUP};
+    // a dropped props cache re-sends connector state, which only synchronous commits
+    // can retry if the driver rejects it.
+    if (!connector->atomic.propsCached())
         return {.error = ENOTSUP};
     if (!STATE.buffer || !STATE.enabled || STATE.drmFormat == DRM_FORMAT_INVALID)
         return {.error = EINVAL};

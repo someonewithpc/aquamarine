@@ -248,7 +248,7 @@ void Aquamarine::CDRMAtomicRequest::addConnector(Hyprutils::Memory::CSharedPoint
     // some displays (samsung HDMI TVs in particular) renegotiate the avi infoframe,
     // causing per-frame blanking. cache the last-applied values and only emit on a
     // modeset, on the first commit, or when a value actually changes. (see #265)
-    const bool     forceConnProps = data.modeset || !connector->atomic.propsCached;
+    const bool     forceConnProps = data.modeset || (!connector->atomic.propsCached() && !(data.flags & DRM_MODE_PAGE_FLIP_ASYNC));
     const uint32_t newCrtcID      = enable ? connector->crtc->id : 0;
     uint64_t       newMaxBpc = 0, newColorspace = 0;
     uint16_t       newContentType = 0;
@@ -289,6 +289,10 @@ void Aquamarine::CDRMAtomicRequest::addConnector(Hyprutils::Memory::CSharedPoint
 
     if (forceConnProps || connector->atomic.crtcID != newCrtcID)
         add(connector->id, connector->props.values.crtc_id, newCrtcID);
+    // a tearing flip doesn't force the props, so it leaves a dropped cache to the next
+    // vsynced commit. on async flips the kernel only accepts unchanged connector values,
+    // and amdgpu rejects async flips that aren't fast updates.
+    data.atomic.propsGeneration = (data.flags & DRM_MODE_PAGE_FLIP_ASYNC) ? connector->atomic.propsCacheGeneration : connector->atomic.propsGeneration;
 
     if (enable && connector->props.values.content_type) {
         newContentType = STATE.contentType;
@@ -493,12 +497,12 @@ void Aquamarine::CDRMAtomicImpl::finalizeAsync(CDRMAtomicRequest& request, SP<SD
     connector->atomic.colorspace  = data.atomic.colorspace;
     connector->atomic.contentType = data.atomic.contentType;
     connector->atomic.crtcID      = data.atomic.crtcID;
-    connector->atomic.propsCached = true;
     connector->atomic.colorRange  = data.outputState.colorRange;
     connector->atomic.vrrEnabled  = data.outputState.adaptiveSync;
     connector->output->vrrActive  = data.outputState.adaptiveSync;
     if (data.atomic.ctmd)
         connector->crtc->atomic.ctmStateKnown = true;
+    connector->atomic.propsCacheGeneration = data.atomic.propsGeneration;
 }
 
 bool Aquamarine::CDRMAtomicImpl::prepareConnector(Hyprutils::Memory::CSharedPointer<SDRMConnector> connector, SDRMConnectorCommitData& data) {
@@ -673,10 +677,10 @@ bool Aquamarine::CDRMAtomicImpl::commit(Hyprutils::Memory::CSharedPointer<SDRMCo
                 connector->atomic.colorspace  = data.atomic.colorspace;
                 connector->atomic.contentType = data.atomic.contentType;
                 connector->atomic.crtcID      = data.atomic.crtcID;
-                connector->atomic.propsCached = true;
                 connector->atomic.colorRange  = data.outputState.colorRange;
                 if (data.atomic.ctmd)
                     connector->crtc->atomic.ctmStateKnown = true;
+                connector->atomic.propsCacheGeneration = data.atomic.propsGeneration;
 
                 if (data.mainFB && data.enabled && (flags & DRM_MODE_PAGE_FLIP_EVENT))
                     connector->sched.onFrameSubmitted();
@@ -722,10 +726,10 @@ bool Aquamarine::CDRMAtomicImpl::commit(Hyprutils::Memory::CSharedPointer<SDRMCo
             connector->atomic.colorspace  = data.atomic.colorspace;
             connector->atomic.contentType = data.atomic.contentType;
             connector->atomic.crtcID      = data.atomic.crtcID;
-            connector->atomic.propsCached = true;
             connector->atomic.colorRange  = data.outputState.colorRange;
             if (data.atomic.ctmd)
                 connector->crtc->atomic.ctmStateKnown = true;
+            connector->atomic.propsCacheGeneration = data.atomic.propsGeneration;
         }
     } else
         applied.rollback(data);
