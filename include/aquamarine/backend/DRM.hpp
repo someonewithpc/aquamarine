@@ -331,6 +331,9 @@ namespace Aquamarine {
             uint16_t contentType = 0;
             uint32_t crtcID      = 0;
 
+            // the connector's propsGeneration when this request was built
+            uint64_t propsGeneration = 0;
+
             // true if the max_bpc property was actually added to the atomic request
             // (i.e. not skipped as an unchanged cached value on a page-flip). only when
             // this is set may a commit failure be attributed to max_bpc and trigger the
@@ -374,6 +377,7 @@ namespace Aquamarine {
         std::string                                    szName;
         drmModeConnection                              status       = DRM_MODE_DISCONNECTED;
         uint32_t                                       id           = 0;
+        uint32_t                                       type         = DRM_MODE_CONNECTOR_Unknown;
         std::array<uint64_t, 2>                        maxBpcBounds = {0, 0};
         Hyprutils::Memory::CSharedPointer<SDRMCRTC>    crtc;
         int32_t                                        refresh       = 0;
@@ -408,8 +412,17 @@ namespace Aquamarine {
             uint64_t          colorspace  = 0;
             uint16_t          contentType = 0;
             uint32_t          crtcID      = 0;
-            bool              propsCached = false;
             eOutputColorRange colorRange  = AQ_OUTPUT_COLOR_RANGE_AUTO;
+
+            // A hotplug event bumps propsGeneration, which drops the values above. A
+            // successful commit stores the generation it was built with, so a flip
+            // already in flight when the event arrives can't make the cache valid again.
+            uint64_t propsGeneration      = 1;
+            uint64_t propsCacheGeneration = 0;
+
+            bool     propsCached() const {
+                return propsCacheGeneration == propsGeneration;
+            }
         } atomic;
 
         union UDRMConnectorProps {
