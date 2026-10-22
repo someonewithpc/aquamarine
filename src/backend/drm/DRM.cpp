@@ -696,7 +696,12 @@ void Aquamarine::CDRMBackend::restoreAfterVT() {
                      std::format("drm: Restoring crtc {} with clock {} hdisplay {} vdisplay {} vrefresh {}", c->crtc->id, data.modeInfo.clock, data.modeInfo.hdisplay,
                                  data.modeInfo.vdisplay, data.modeInfo.vrefresh));
 
-        if (!impl->commit(c, data))
+        // Through commitState() so applyCommit() records what the restore put on
+        // screen. A commit refused while the session was inactive leaves
+        // enabledState false with the output's state still enabled; restoring
+        // that with a bare impl->commit() lit the CRTC but kept enabledState
+        // false, so scheduleFrame() never ran and the output stayed black.
+        if (!c->commitState(data))
             backend->log(AQ_LOG_ERROR, std::format("drm: crtc {} failed restore", c->crtc->id));
     }
 
