@@ -5,6 +5,8 @@
 #include <aquamarine/backend/Null.hpp>
 #include <aquamarine/allocator/GBM.hpp>
 #include <hyprutils/os/FileDescriptor.hpp>
+#include <hyprutils/string/VarList.hpp>
+#include <filesystem>
 #include <ranges>
 #include <sys/timerfd.h>
 #include <ctime>
@@ -305,6 +307,25 @@ void Aquamarine::CBackend::dispatchIdle() {
 }
 
 void Aquamarine::CBackend::onNewGpu(std::string path) {
+    // The startup scan honours AQ_DRM_DEVICES; a GPU hotplugged later must too.
+    if (const auto explicitGpus = getenv("AQ_DRM_DEVICES"); explicitGpus) {
+        std::error_code             ec;
+        const auto                  canonicalPath = std::filesystem::canonical(path, ec);
+        bool                        listed        = false;
+        Hyprutils::String::CVarList explicitDevices(explicitGpus, 0, ':', true);
+        for (auto const& d : explicitDevices) {
+            std::error_code dEc;
+            if (!ec && std::filesystem::canonical(d, dEc) == canonicalPath && !dEc) {
+                listed = true;
+                break;
+            }
+        }
+        if (!listed) {
+            log(AQ_LOG_DEBUG, std::format("drm: Skipping hotplugged gpu {}, not in AQ_DRM_DEVICES", path));
+            return;
+        }
+    }
+
     const auto primary    = std::ranges::find_if(implementations, [](SP<IBackendImplementation> value) { return value->type() == Aquamarine::AQ_BACKEND_DRM; });
     const auto primaryDrm = primary != implementations.end() ? ((Aquamarine::CDRMBackend*)(*primary).get())->self.lock() : nullptr;
 
