@@ -116,7 +116,10 @@ bool Aquamarine::CDRMAtomicRequest::restateConnectors(SP<SDRMConnector> self) {
 
         // A head that has not scanned out yet has no buffer to restate; its
         // existing plane state carries over untouched, which is what we want.
-        if (c->crtc->primary && c->crtc->primary->front) {
+        // The same goes for a front FB whose buffer is already gone, as can
+        // happen on a head that was left alone across a resume: planeProps
+        // would dereference the expired weak pointer.
+        if (c->crtc->primary && c->crtc->primary->front && !c->crtc->primary->front->dead && c->crtc->primary->front->buffer) {
             // planeProps reads per-connector state off `conn`, so point it at the
             // head we are restating rather than ours.
             const auto saved = conn;
