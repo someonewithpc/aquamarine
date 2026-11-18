@@ -621,6 +621,16 @@ void Aquamarine::CDRMBackend::restoreAfterVT() {
 
     backend->log(AQ_LOG_DEBUG, "drm: Rescanned connectors");
 
+    // The restore below modesets one head per commit. If the kernel holds the
+    // heads on each other's CRTCs, each such commit leaves the other head's
+    // CRTC enabled with no connector, which the atomic core rejects, so start
+    // from every CRTC off.
+    if (kmsRoutingDiffers()) {
+        backend->log(AQ_LOG_DEBUG, "drm: The kernel routes connectors to other CRTCs than ours, resetting KMS before the restore");
+        if (!impl->reset())
+            backend->log(AQ_LOG_ERROR, "drm: KMS reset before the restore failed");
+    }
+
     std::vector<SP<SDRMConnector>> noMode;
 
     for (auto const& c : connectors) {
@@ -712,6 +722,34 @@ void Aquamarine::CDRMBackend::restoreAfterVT() {
         // tell the consumer to re-set a state because we had no mode
         c->output->events.state.emit(IOutput::SStateEvent{});
     }
+}
+
+// While we don't hold master, another client can route connectors to other
+// CRTCs. fbdev does on a switch to a text VT: it hands out CRTCs in connector
+// order, whatever order we assigned them in.
+bool Aquamarine::CDRMBackend::kmsRoutingDiffers() {
+    for (auto const& c : connectors) {
+        auto drmConn = drmModeGetConnectorCurrent(gpu->fd, c->id);
+        if (!drmConn)
+            continue;
+
+        uint32_t kernelCrtc = 0;
+        if (drmConn->encoder_id) {
+            if (auto encoder = drmModeGetEncoder(gpu->fd, drmConn->encoder_id)) {
+                kernelCrtc = encoder->crtc_id;
+                drmModeFreeEncoder(encoder);
+            }
+        }
+
+        drmModeFreeConnector(drmConn);
+
+        if (kernelCrtc && (!c->crtc || c->crtc->id != kernelCrtc)) {
+            backend->log(AQ_LOG_DEBUG, std::format("drm: The kernel routes {} to crtc {}, we have it on {}", c->szName, kernelCrtc, c->crtc ? (int)c->crtc->id : -1));
+            return true;
+        }
+    }
+
+    return false;
 }
 
 bool Aquamarine::CDRMBackend::checkFeatures() {

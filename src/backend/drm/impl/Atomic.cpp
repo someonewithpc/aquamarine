@@ -728,6 +728,10 @@ bool Aquamarine::CDRMAtomicImpl::reset() {
         for (auto const& crtc : backend->crtcs) {
             crtc->atomic.ctmStateKnown = false;
         }
+
+        for (auto const& conn : backend->connectors) {
+            conn->atomic.propsCached = false;
+        }
     }
 
     return ok;

@@ -508,6 +508,7 @@ namespace Aquamarine {
         void     scanConnectors();
         void     scanLeases();
         void     restoreAfterVT();
+        bool     kmsRoutingDiffers();
         void     recheckOutputs();
         void     recheckCRTCs();
         void     markRedundantTiles();
