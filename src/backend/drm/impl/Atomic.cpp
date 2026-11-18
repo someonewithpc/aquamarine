@@ -613,7 +613,8 @@ bool Aquamarine::CDRMAtomicImpl::commit(Hyprutils::Memory::CSharedPointer<SDRMCo
     if (!data.blocking && !data.test)
         flags |= DRM_MODE_ATOMIC_NONBLOCK;
 
-    bool ok = request.commit(flags);
+    bool ok             = request.commit(flags);
+    bool maxBpcRetryRan = false;
 
     // If the commit failed and max_bpc was actually emitted in this request, retry
     // without it. Some drivers (notably amdgpu on eDP panels) reject atomic commits
@@ -627,9 +628,10 @@ bool Aquamarine::CDRMAtomicImpl::commit(Hyprutils::Memory::CSharedPointer<SDRMCo
         // and will skip the max_bpc property). The property blobs created in
         // prepareConnector() are reused as-is, so we must NOT roll back the
         // original request here or request2 would submit already-destroyed blob
-        // IDs. Blob cleanup is handled by request2.apply()/rollback() below.
+        // IDs. request2.apply() takes the blobs on success; otherwise the
+        // rollback at the end of this function releases them.
         // maxBpcFailed is latched here so addConnector omits the property, then
-        // cleared on retry failure so a transient error does not permanently
+        // cleared if every retry fails so a transient error does not permanently
         // disable max_bpc for this connector.
         connector->maxBpcFailed   = true;
         data.atomic.maxBpc        = 0;
@@ -655,12 +657,12 @@ bool Aquamarine::CDRMAtomicImpl::commit(Hyprutils::Memory::CSharedPointer<SDRMCo
                 if (data.mainFB && data.enabled && (flags & DRM_MODE_PAGE_FLIP_EVENT))
                     connector->sched.onFrameSubmitted();
             }
-        } else {
-            connector->maxBpcFailed = false;
-            request2.rollback(data);
+
+            return ok;
         }
 
-        return ok;
+        // The restate retry below still gets its turn, with max_bpc left off
+        maxBpcRetryRan = true;
     }
 
     // A modeset the driver rejects may still be reachable if every head is
@@ -683,6 +685,9 @@ bool Aquamarine::CDRMAtomicImpl::commit(Hyprutils::Memory::CSharedPointer<SDRMCo
         if (!ok)
             retry.reset();
     }
+
+    if (!ok && maxBpcRetryRan)
+        connector->maxBpcFailed = false;
 
     // whichever request the kernel accepted owns the blob bookkeeping
     CDRMAtomicRequest& applied = retry.has_value() ? *retry : request;
