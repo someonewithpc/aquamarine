@@ -29,8 +29,9 @@ Aquamarine::CDRMAtomicRequest::~CDRMAtomicRequest() {
     }
 }
 
-// Restates every other enabled head at its current mode, so the kernel re-runs
-// its global modeset check across all of them instead of only ours.
+// Restates every other enabled head at the mode we last committed for it, so
+// the kernel re-runs its global modeset check across all of them instead of
+// only ours.
 //
 // Drivers that allocate display bandwidth or head resources globally (nvidia,
 // and i915 via intel_bw_atomic_check) can reject a modeset that touches a single
@@ -55,14 +56,29 @@ bool Aquamarine::CDRMAtomicRequest::restateConnectors(SP<SDRMConnector> self) {
         if (!c->output->enabledState)
             continue;
 
-        drmModeModeInfo* current = c->getCurrentMode();
-        if (!current)
-            continue;
+        // The kernel's MODE_ID on c->crtc belongs to another head when another
+        // client moved the heads between CRTCs, so prefer the mode we committed.
+        std::optional<drmModeModeInfo> ours;
+        if (c->crtc->atomic.ownModeID && c->crtc->atomic.modeID) {
+            if (auto blob = drmModeGetPropertyBlob(backend->gpu->fd, c->crtc->atomic.modeID)) {
+                if (blob->length == sizeof(drmModeModeInfo))
+                    ours = *sc<drmModeModeInfo*>(blob->data);
+                drmModeFreePropertyBlob(blob);
+            }
+        }
 
-        // getCurrentMode hands back a malloc'd copy. Take it by value and release
-        // it right away, so the early exits below don't each need their own free.
-        const drmModeModeInfo mode = *current;
-        free(current); // I know this and other will fail lint
+        if (!ours) {
+            drmModeModeInfo* current = c->getCurrentMode();
+            if (!current)
+                continue;
+
+            // getCurrentMode hands back a malloc'd copy. Take it by value and release
+            // it right away, so the early exits below don't each need their own free.
+            ours = *current;
+            free(current); // I know this and other will fail lint
+        }
+
+        const drmModeModeInfo mode = *ours;
 
         uint32_t blob = 0;
         if (drmModeCreatePropertyBlob(backend->gpu->fd, &mode, sizeof(mode), &blob)) {
